@@ -302,7 +302,7 @@ interface DashboardViewProps {
     setShowSettleModal: (v: boolean) => void;
     onTransactionClick: (t: Transaction) => void;
     loading: boolean;
-    onDelete: () => void;
+    onDelete: (id:string) => void;
 }
 
 const DashboardView: React.FC<DashboardViewProps> = ({
@@ -667,7 +667,7 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                                 <Pie data={pieData} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
                                     {pieData.map((_e, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                                 </Pie>
-                                {/* @ts-ignore */}
+                                {/* @ts-expect-error */}
                                 <Tooltip formatter={(value: number) => `₹${value.toLocaleString()}`} />
                                 <Legend />
                             </RePieChart>
