@@ -5,13 +5,9 @@ import Budget from '@/models/budget';
 export async function GET() {
     await dbConnect();
     try {
+        // Return an ARRAY of budgets, not a Map/Object
         const budgets = await Budget.find({});
-        // Convert array to object map for frontend { "Food": 500 }
-        const budgetMap = budgets.reduce((acc, curr) => {
-            acc[curr.category] = curr.amount;
-            return acc;
-        }, {});
-        return NextResponse.json({ success: true, data: budgetMap });
+        return NextResponse.json({ success: true, data: budgets });
     } catch (error) {
         return NextResponse.json({ success: false, error }, { status: 400 });
     }
@@ -21,9 +17,10 @@ export async function POST(req: Request) {
     await dbConnect();
     try {
         const body = await req.json();
-        // Upsert (Update if exists, Insert if not)
+        // Update or Insert based on BOTH category AND owner
+        // This allows "Me" to have a Food budget and "Her" to have a separate Food budget
         await Budget.findOneAndUpdate(
-            { category: body.category },
+            { category: body.category, owner: body.owner },
             { amount: body.amount },
             { upsert: true, new: true }
         );

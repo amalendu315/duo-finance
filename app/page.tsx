@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     Plus,
-    PieChart,
     Settings,
     ArrowRightLeft,
     TrendingUp,
@@ -19,7 +18,11 @@ import {
     ChevronLeft,
     ChevronRight,
     Calendar,
-    Loader2
+    Loader2,
+    ListTodo,
+    CheckCircle,
+    Circle,
+    PieChart as PieChartIcon
 } from 'lucide-react';
 import {
     PieChart as RePieChart,
@@ -27,77 +30,15 @@ import {
     Cell,
     ResponsiveContainer,
     Tooltip,
-    Legend,
+    Legend
 } from 'recharts';
 
-/**
- * DuoFinance: MongoDB Connected Version
- * Features:
- * - Real-time sync (Polling)
- * - MongoDB Persistence
- * - Full History Access
- * - Type-Safe & ESLint Compliant
- */
-
-// --- Types ---
-
-type TransactionType = 'income' | 'expense' | 'settlement';
-type Owner = 'me' | 'her';
-type SplitType = 'personal' | 'shared';
-type ViewState = 'dashboard' | 'add' | 'budgets' | 'analytics' | 'settings';
-type FilterState = 'weekly' | 'monthly' | 'yearly';
-
-interface Transaction {
-    _id: string; // MongoDB ID
-    amount: string;
-    category: string;
-    date: string; // ISO YYYY-MM-DD
-    note: string;
-    type: TransactionType;
-    owner: Owner;
-    split?: SplitType;
-    from?: Owner;
-    to?: Owner;
-}
-
-// Form state usually doesn't have an ID yet
-interface TransactionFormState {
-    amount: string;
-    category: string;
-    date: string;
-    note: string;
-    type: TransactionType;
-    owner: Owner;
-    split: SplitType;
-}
-
-type Budgets = Record<string, number>;
-
-interface Financials {
-    income: number;
-    expense: number;
-    balance: number;
-    settlement: {
-        amount: number;
-        whoOwes: Owner | 'none';
-        raw: number;
-    };
-}
-
-interface BudgetStat {
-    category: string;
-    monthlyLimit: number;
-    effectiveLimit: number;
-    spent: number;
-    pct: number;
-}
-
-interface DateRange {
-    start: Date;
-    end: Date;
-}
+// Import the details modal component
+import { TransactionDetailsModal } from '@/components/transaction-details';
 
 // --- Constants ---
+const STORAGE_KEY = 'duofinance_next_v1';
+
 const CATEGORIES = [
     'Food & Dining', 'Groceries', 'Rent & Housing', 'Utilities',
     'Transport', 'Shopping', 'Entertainment', 'Health', 'Travel',
@@ -117,6 +58,72 @@ const CHART_COLORS = [
     '#3b82f6', '#d946ef', '#14b8a6', '#f59e0b', '#10b981',
     '#6366f1', '#ec4899', '#84cc16', '#06b6d4'
 ];
+
+// --- Types ---
+
+type TransactionType = 'income' | 'expense' | 'settlement';
+type Owner = 'me' | 'her';
+type BudgetOwner = 'me' | 'her' | 'joint';
+type SplitType = 'personal' | 'shared';
+type ViewState = 'dashboard' | 'add' | 'budgets' | 'analytics' | 'todos' | 'settings';
+type FilterState = 'weekly' | 'monthly' | 'yearly';
+
+// Re-exporting interfaces here to ensure file is self-contained if types/index.ts isn't perfect yet
+export interface Transaction {
+    _id: string;
+    amount: string;
+    category: string;
+    date: string;
+    note: string;
+    type: TransactionType;
+    owner: Owner;
+    split?: SplitType;
+    from?: Owner;
+    to?: Owner;
+}
+
+export interface TransactionFormState {
+    amount: string;
+    category: string;
+    date: string;
+    note: string;
+    type: TransactionType;
+    owner: Owner;
+    split: SplitType;
+}
+
+export interface Budget {
+    _id: string;
+    category: string;
+    amount: number;
+    owner: BudgetOwner;
+}
+
+export interface Todo {
+    _id: string;
+    text: string;
+    completed: boolean;
+    createdBy: Owner;
+}
+
+export interface Financials {
+    income: number;
+    expense: number;
+    balance: number;
+    settlement: {
+        amount: number;
+        whoOwes: Owner | 'none';
+        raw: number;
+    };
+}
+
+export interface BudgetStat {
+    category: string;
+    monthlyLimit: number;
+    effectiveLimit: number;
+    spent: number;
+    pct: number;
+}
 
 // --- Helpers ---
 
@@ -152,7 +159,7 @@ interface ConfirmationModalProps {
 const ConfirmationModal: React.FC<ConfirmationModalProps> = ({ isOpen, title, message, onConfirm, onCancel, isDanger = false }) => {
     if (!isOpen) return null;
     return (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl scale-100 animate-in zoom-in-95 duration-200">
                 <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 mx-auto ${isDanger ? 'bg-red-100 text-red-500' : 'bg-blue-100 text-blue-500'}`}>
                     {isDanger ? <AlertTriangle size={24} /> : <Info size={24} />}
@@ -215,13 +222,21 @@ const DateFilterControl: React.FC<DateFilterControlProps> = ({ filter, setFilter
 
 interface TransactionItemProps {
     t: Transaction;
-    onDelete: (id: string) => void;
+    onClick: (t: Transaction) => void;
 }
 
-const TransactionItem: React.FC<TransactionItemProps> = ({ t, onDelete }) => {
-    if (t.type === 'settlement') {
+const TransactionItem: React.FC<TransactionItemProps> = ({ t, onClick }) => {
+    const isSettlement = t.type === 'settlement';
+    const isInc = t.type === 'income';
+    const ownerColor = t.owner === 'me' ? COLORS.me : COLORS.her;
+    const splitColor = t.split === 'shared' ? COLORS.shared : ownerColor;
+
+    if (isSettlement) {
         return (
-            <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-200 mb-3 opacity-80">
+            <div
+                onClick={() => onClick(t)}
+                className="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-200 mb-3 opacity-80 cursor-pointer hover:bg-slate-100 transition-colors"
+            >
                 <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-500">
                         <RefreshCcw size={18} />
@@ -235,18 +250,16 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ t, onDelete }) => {
                 </div>
                 <div className="text-right">
                     <span className="block font-bold text-slate-500">₹{Number(t.amount).toLocaleString()}</span>
-                    <button onClick={() => onDelete(t._id)} className="text-xs text-red-400 mt-1 hover:text-red-600 font-medium">Undo</button>
                 </div>
             </div>
         );
     }
 
-    const isInc = t.type === 'income';
-    const ownerColor = t.owner === 'me' ? COLORS.me : COLORS.her;
-    const splitColor = t.split === 'shared' ? COLORS.shared : ownerColor;
-
     return (
-        <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-slate-100 shadow-sm mb-3 relative overflow-hidden transition-transform active:scale-[0.99]">
+        <div
+            onClick={() => onClick(t)}
+            className="flex items-center justify-between bg-white p-4 rounded-xl border border-slate-100 shadow-sm mb-3 relative overflow-hidden transition-transform active:scale-[0.99] cursor-pointer hover:shadow-md"
+        >
             <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: splitColor }}></div>
             <div className="flex items-center gap-4 pl-2">
                 <div
@@ -269,9 +282,6 @@ const TransactionItem: React.FC<TransactionItemProps> = ({ t, onDelete }) => {
             {isInc ? '+' : '-'}₹{Number(t.amount).toLocaleString()}
           </span>
                 </div>
-                <button onClick={() => onDelete(t._id)} className="text-slate-300 hover:text-rose-500 p-1">
-                    <Trash2 size={16} />
-                </button>
             </div>
         </div>
     );
@@ -290,22 +300,23 @@ interface DashboardViewProps {
     budgetStats: BudgetStat[];
     setView: (v: ViewState) => void;
     setShowSettleModal: (v: boolean) => void;
-    onDelete: (id: string) => void;
+    onTransactionClick: (t: Transaction) => void;
     loading: boolean;
+    onDelete: () => void;
 }
 
 const DashboardView: React.FC<DashboardViewProps> = ({
                                                          financials, filter, setFilter, selectedDate, onPrev, onNext,
-                                                         filteredTransactions, budgetStats, setView, setShowSettleModal, onDelete, loading
+                                                         filteredTransactions, budgetStats, setView, setShowSettleModal, onTransactionClick, loading,onDelete
                                                      }) => (
     <div className="pb-24 animate-in fade-in">
         <div className="flex justify-between items-end mb-6">
             <div>
                 <h1 className="text-2xl font-black text-slate-800 tracking-tight">DuoFinance</h1>
-                <p className="text-slate-400 text-sm font-medium flex items-center gap-1">
+                <div className="text-slate-400 text-sm font-medium flex items-center gap-1">
                     {loading ? <Loader2 size={12} className="animate-spin" /> : <div className="w-2 h-2 bg-green-500 rounded-full"></div>}
                     Synced
-                </p>
+                </div>
             </div>
             <button onClick={() => setView('settings')} className="p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition">
                 <Settings size={20} />
@@ -391,7 +402,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div>
             <h3 className="font-bold text-slate-800 mb-3">Recent</h3>
-            {filteredTransactions.slice(0, 5).map((t) => <TransactionItem key={t._id} t={t} onDelete={onDelete} />)}
+            {filteredTransactions.slice(0, 5).map((t) => <TransactionItem key={t._id} t={t} onClick={onTransactionClick} />)}
             {filteredTransactions.length === 0 && (
                 <div className="text-center py-8 text-slate-400 text-sm">No activity found.</div>
             )}
@@ -510,17 +521,35 @@ interface BudgetPlannerViewProps {
     selectedDate: Date;
     onPrev: () => void;
     onNext: () => void;
-    budgets: Budgets;
-    setBudgets: React.Dispatch<React.SetStateAction<Budgets>>;
-    onSaveBudget: (category: string, amount: number) => void;
+    budgets: Budget[];
+    budgetOwner: BudgetOwner;
+    setBudgetOwner: (o: BudgetOwner) => void;
+    onSaveBudget: (category: string, amount: number, owner: BudgetOwner) => void;
 }
 
 const BudgetPlannerView: React.FC<BudgetPlannerViewProps> = ({
-                                                                 budgetStats, filter, setFilter, selectedDate, onPrev, onNext, budgets, setBudgets, onSaveBudget
+                                                                 budgetStats, filter, setFilter, selectedDate, onPrev, onNext, budgets, budgetOwner, setBudgetOwner, onSaveBudget
                                                              }) => {
     return (
         <div className="pb-24 animate-in fade-in">
             <h2 className="text-2xl font-black text-slate-800 mb-4">Budget Planner</h2>
+
+            {/* Budget Owner Tabs */}
+            <div className="flex bg-slate-100 p-1 rounded-xl mb-4">
+                {(['joint', 'me', 'her'] as BudgetOwner[]).map((o) => (
+                    <button
+                        key={o}
+                        onClick={() => setBudgetOwner(o)}
+                        className={`flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                            budgetOwner === o
+                                ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
+                                : 'text-slate-400 hover:text-slate-600'
+                        }`}
+                    >
+                        {o}
+                    </button>
+                ))}
+            </div>
 
             <DateFilterControl
                 filter={filter}
@@ -535,25 +564,30 @@ const BudgetPlannerView: React.FC<BudgetPlannerViewProps> = ({
                 <div>
                     <p className="text-sm text-blue-800 font-bold">How this works</p>
                     <p className="text-xs text-blue-600 mt-1">
-                        Set your <span className="font-bold underline">Monthly Limit</span> below.
-                        If you view by &quot;Weekly&quot;, we scale this limit (x0.23). The progress shows spending for the selected period.
+                        Setting budgets for <b>{budgetOwner.toUpperCase()}</b>. Limits scale automatically when viewing Weekly (x0.23).
                     </p>
                 </div>
             </div>
 
             <div className="space-y-4">
                 {CATEGORIES.filter(c => c !== 'Income' && c !== 'Savings').map(cat => {
-                    const stat = budgetStats.find((s) => s.category === cat) || { spent: 0, monthlyLimit: 0, effectiveLimit: 0, pct: 0, category: cat };
+                    // Safely find the budget item from the array
+                    const budgetItem = Array.isArray(budgets) ? budgets.find(b => b.category === cat && b.owner === budgetOwner) : null;
+                    const monthlyLimit = budgetItem?.amount || 0;
+                    const effectiveLimit = filter === 'weekly' ? monthlyLimit * 0.23 : filter === 'yearly' ? monthlyLimit * 12 : monthlyLimit;
+                    const globalStat = budgetStats.find((s) => s.category === cat) || { spent: 0 };
+                    const pct = effectiveLimit > 0 ? (globalStat.spent / effectiveLimit) * 100 : 0;
+
                     return (
                         <div key={cat} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
                             <div className="flex justify-between items-start mb-3">
                                 <div className="flex items-center gap-2">
-                                    <div className={`w-3 h-3 rounded-full ${stat.pct > 100 ? 'bg-rose-500' : 'bg-blue-500'}`}></div>
+                                    <div className={`w-3 h-3 rounded-full ${pct > 100 ? 'bg-rose-500' : 'bg-blue-500'}`}></div>
                                     <div>
                                         <span className="font-bold text-slate-700 block">{cat}</span>
-                                        {filter !== 'monthly' && stat.monthlyLimit > 0 && (
+                                        {filter !== 'monthly' && monthlyLimit > 0 && (
                                             <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
-                            {filter} cap: ₹{stat.effectiveLimit.toFixed(0)}
+                            {filter} cap: ₹{effectiveLimit.toFixed(0)}
                           </span>
                                         )}
                                     </div>
@@ -566,25 +600,21 @@ const BudgetPlannerView: React.FC<BudgetPlannerViewProps> = ({
                                             type="number"
                                             placeholder="0"
                                             className="w-24 text-right p-2 pl-5 bg-slate-50 rounded-lg text-sm font-bold border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
-                                            value={budgets[cat] || ''}
-                                            onChange={(e) => {
-                                                const val = Number(e.target.value);
-                                                setBudgets((prev) => ({...prev, [cat]: val}));
-                                                onSaveBudget(cat, val);
-                                            }}
+                                            value={monthlyLimit || ''}
+                                            onChange={(e) => onSaveBudget(cat, Number(e.target.value), budgetOwner)}
                                         />
                                     </div>
                                 </div>
                             </div>
-                            {budgets[cat] > 0 && (
+                            {monthlyLimit > 0 && (
                                 <div className="relative pt-1">
                                     <div className="flex justify-between text-xs mb-1 text-slate-500 font-medium">
-                                        <span>₹{stat.spent.toLocaleString()} spent ({formatDateRange(selectedDate, filter)})</span>
-                                        <span className={stat.pct > 100 ? 'text-rose-500 font-bold' : ''}>{Math.round(stat.pct)}%</span>
+                                        <span>₹{globalStat.spent.toLocaleString()} spent ({formatDateRange(selectedDate, filter)})</span>
+                                        <span className={pct > 100 ? 'text-rose-500 font-bold' : ''}>{Math.round(pct)}%</span>
                                     </div>
                                     <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden">
-                                        <div className={`h-full rounded-full transition-all duration-500 ${stat.pct > 100 ? 'bg-rose-500' : 'bg-blue-500'}`}
-                                             style={{width: `${Math.min(stat.pct, 100)}%`}}></div>
+                                        <div className={`h-full rounded-full transition-all duration-500 ${pct > 100 ? 'bg-rose-500' : 'bg-blue-500'}`}
+                                             style={{width: `${Math.min(pct, 100)}%`}}></div>
                                     </div>
                                 </div>
                             )}
@@ -603,11 +633,12 @@ interface AnalyticsViewProps {
     selectedDate: Date;
     onPrev: () => void;
     onNext: () => void;
+    onTransactionClick: (t: Transaction) => void;
     onDelete: (id: string) => void;
 }
 
 const AnalyticsView: React.FC<AnalyticsViewProps> = ({
-                                                         filteredTransactions, filter, setFilter, selectedDate, onPrev, onNext, onDelete
+                                                         filteredTransactions, filter, setFilter, selectedDate, onPrev, onNext, onTransactionClick, onDelete
                                                      }) => {
     const pieData = useMemo(() => {
         return Object.entries(filteredTransactions.filter((t) => t.type === 'expense').reduce<Record<string, number>>((acc, t) => {
@@ -636,7 +667,7 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                                 <Pie data={pieData} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
                                     {pieData.map((_e, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                                 </Pie>
-                                {/*@ts-ignore*/}
+                                {/* @ts-ignore */}
                                 <Tooltip formatter={(value: number) => `₹${value.toLocaleString()}`} />
                                 <Legend />
                             </RePieChart>
@@ -647,8 +678,65 @@ const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
             <div className="bg-white rounded-xl overflow-hidden border border-slate-100 shadow-sm">
                 <div className="p-3 bg-slate-50 border-b border-slate-100 font-bold text-sm text-slate-600">History</div>
-                {filteredTransactions.map((t) => <TransactionItem key={t._id} t={t} onDelete={onDelete} />)}
+                {filteredTransactions.map((t) => <TransactionItem key={t._id} t={t} onClick={onTransactionClick} />)}
                 {filteredTransactions.length === 0 && <p className="p-4 text-center text-slate-400 text-sm">No transactions in this period.</p>}
+            </div>
+        </div>
+    );
+};
+
+interface TodosViewProps {
+    todos: Todo[];
+    onAdd: (text: string) => void;
+    onToggle: (id: string, current: boolean) => void;
+    onDelete: (id: string) => void;
+}
+
+const TodosView: React.FC<TodosViewProps> = ({ todos, onAdd, onToggle, onDelete }) => {
+    const [text, setText] = useState('');
+
+    const handleAdd = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!text.trim()) return;
+        onAdd(text);
+        setText('');
+    };
+
+    return (
+        <div className="pb-24 animate-in fade-in">
+            <h2 className="text-2xl font-black text-slate-800 mb-6">Todos & Orders</h2>
+
+            <form onSubmit={handleAdd} className="flex gap-2 mb-6">
+                <input
+                    type="text"
+                    placeholder="Add a task for us..."
+                    className="flex-1 p-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-slate-100 transition-all"
+                    value={text}
+                    onChange={e => setText(e.target.value)}
+                />
+                <button type="submit" className="bg-slate-900 text-white p-3 rounded-xl">
+                    <Plus size={24} />
+                </button>
+            </form>
+
+            <div className="space-y-2">
+                {todos.map(todo => (
+                    <div key={todo._id} className={`flex items-center justify-between p-4 rounded-xl border transition-all ${todo.completed ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-white border-slate-200 shadow-sm'}`}>
+                        <div className="flex items-center gap-3 flex-1 cursor-pointer" onClick={() => onToggle(todo._id, todo.completed)}>
+                            {todo.completed ? <CheckCircle className="text-slate-400" size={20} /> : <Circle className="text-slate-300" size={20} />}
+                            <span className={`font-medium ${todo.completed ? 'line-through text-slate-400' : 'text-slate-700'}`}>{todo.text}</span>
+                        </div>
+                        <button onClick={() => onDelete(todo._id)} className="text-slate-300 hover:text-red-400 p-2">
+                            <Trash2 size={16} />
+                        </button>
+                    </div>
+                ))}
+                {todos.length === 0 && (
+                    <div className="text-center py-10 text-slate-400">
+                        <ListTodo size={48} className="mx-auto mb-2 opacity-20" />
+                        <p className="text-sm">No tasks yet.</p>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -685,12 +773,16 @@ const SettleModal: React.FC<SettleModalProps> = ({ financials, onCancel, onConfi
 
 export default function DuoFinancePage() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [budgets, setBudgets] = useState<Budgets>({});
+    const [budgets, setBudgets] = useState<Budget[]>([]);
+    const [todos, setTodos] = useState<Todo[]>([]);
     const [view, setView] = useState<ViewState>('dashboard');
     const [filter, setFilter] = useState<FilterState>('monthly');
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [loading, setLoading] = useState(true);
     const [showSettleModal, setShowSettleModal] = useState<boolean>(false);
+    const [budgetOwner, setBudgetOwner] = useState<BudgetOwner>('joint');
+    const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
+    const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
 
     // Confirmation Modal State
     const [confirmModal, setConfirmModal] = useState<{
@@ -705,15 +797,21 @@ export default function DuoFinancePage() {
 
     const fetchData = useCallback(async () => {
         try {
-            const [txRes, budgetRes] = await Promise.all([
+            const [txRes, budgetRes, todoRes] = await Promise.all([
                 fetch('/api/transactions'),
-                fetch('/api/budgets')
+                fetch('/api/budgets'),
+                fetch('/api/todos')
             ]);
             const txData = await txRes.json();
             const budgetData = await budgetRes.json();
+            const todoData = await todoRes.json();
 
             if (txData.success) setTransactions(txData.data);
-            if (budgetData.success) setBudgets(budgetData.data);
+            if (budgetData.success) {
+                // Ensure budgets is always an array
+                setBudgets(Array.isArray(budgetData.data) ? budgetData.data : []);
+            }
+            if (todoData.success) setTodos(todoData.data);
         } catch (error) {
             console.error("Failed to fetch data", error);
         } finally {
@@ -742,6 +840,7 @@ export default function DuoFinancePage() {
     };
 
     const deleteTx = useCallback((id: string) => {
+        setIsDetailsModalOpen(false); // Close details modal first
         setConfirmModal({
             isOpen: true,
             title: "Delete Transaction?",
@@ -756,12 +855,24 @@ export default function DuoFinancePage() {
         });
     }, [fetchData]);
 
-    const saveBudget = async (category: string, amount: number) => {
-        // API Call (State updated in component optimistically via setBudgets passed down)
+    const saveBudget = async (category: string, amount: number, owner: BudgetOwner) => {
+        // Optimistic Update
+        setBudgets(prev => {
+            const existingIdx = prev.findIndex(b => b.category === category && b.owner === owner);
+            if (existingIdx >= 0) {
+                const newBudgets = [...prev];
+                newBudgets[existingIdx] = { ...newBudgets[existingIdx], amount };
+                return newBudgets;
+            }
+            // If it doesn't exist, create a temporary entry
+            return [...prev, { _id: 'temp', category, amount, owner }];
+        });
+
+        // Fire and forget (poller will catch up eventually, avoiding input glitches)
         await fetch('/api/budgets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category, amount })
+            body: JSON.stringify({ category, amount, owner })
         });
     };
 
@@ -787,6 +898,39 @@ export default function DuoFinancePage() {
         });
         setShowSettleModal(false);
         fetchData();
+    };
+
+    // --- Todo Actions ---
+    const addTodo = async (text: string) => {
+        // Optimistic
+        const tempId = Date.now().toString();
+        setTodos(prev => [{ _id: tempId, text, completed: false, createdBy: 'me' }, ...prev]);
+
+        await fetch('/api/todos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        fetchData();
+    };
+
+    const toggleTodo = async (id: string, current: boolean) => {
+        setTodos(prev => prev.map(t => t._id === id ? { ...t, completed: !current } : t));
+        await fetch('/api/todos', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _id: id, completed: !current })
+        });
+    };
+
+    const deleteTodo = async (id: string) => {
+        setTodos(prev => prev.filter(t => t._id !== id));
+        await fetch(`/api/todos?id=${id}`, { method: 'DELETE' });
+    };
+
+    const handleTransactionClick = (t: Transaction) => {
+        setSelectedTransaction(t);
+        setIsDetailsModalOpen(true);
     };
 
     // --- Logic ---
@@ -843,7 +987,7 @@ export default function DuoFinancePage() {
             const tDate = new Date(y, m - 1, d);
             tDate.setHours(0, 0, 0, 0);
             return tDate >= dateRange.start && tDate <= dateRange.end;
-        }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        });
     }, [transactions, dateRange]);
 
     const financials = useMemo<Financials>(() => {
@@ -862,7 +1006,7 @@ export default function DuoFinancePage() {
             else expense += val;
         });
 
-        // All time stats for settlement (using full transactions list)
+        // All time stats for settlement
         transactions.forEach(t => {
             const val = Number(t.amount);
             if (t.type === 'settlement') {
@@ -900,14 +1044,14 @@ export default function DuoFinancePage() {
 
         const scale = filter === 'weekly' ? 0.23 : filter === 'yearly' ? 12 : 1;
 
-        return Object.keys(budgets).map(cat => {
-            const monthlyLimit = budgets[cat] || 0;
-            const effectiveLimit = monthlyLimit * scale;
-            const spent = usage[cat] || 0;
-            const pct = effectiveLimit > 0 ? (spent / effectiveLimit) * 100 : 0;
-            return { category: cat, monthlyLimit, effectiveLimit, spent, pct };
-        }).sort((a,b) => b.pct - a.pct);
-    }, [filteredTransactions, budgets, filter]);
+        return CATEGORIES.map(cat => ({
+            category: cat,
+            monthlyLimit: 0, // Placeholder, calculated in view
+            effectiveLimit: 0,
+            spent: usage[cat] || 0,
+            pct: 0
+        }));
+    }, [filteredTransactions, filter]);
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100">
@@ -926,7 +1070,8 @@ export default function DuoFinancePage() {
                             budgetStats={budgetStats}
                             setView={setView}
                             setShowSettleModal={setShowSettleModal}
-                            onDelete={deleteTx}
+                            onTransactionClick={handleTransactionClick}
+                            onDelete={deleteTx} // Pass deleteTx to DashboardView
                             loading={loading}
                         />
                     )}
@@ -942,7 +1087,8 @@ export default function DuoFinancePage() {
                             onPrev={handlePrev}
                             onNext={handleNext}
                             budgets={budgets}
-                            setBudgets={setBudgets}
+                            budgetOwner={budgetOwner}
+                            setBudgetOwner={setBudgetOwner}
                             onSaveBudget={saveBudget}
                         />
                     )}
@@ -956,6 +1102,16 @@ export default function DuoFinancePage() {
                             onPrev={handlePrev}
                             onNext={handleNext}
                             onDelete={deleteTx}
+                            onTransactionClick={handleTransactionClick}
+                        />
+                    )}
+
+                    {view === 'todos' && (
+                        <TodosView
+                            todos={todos}
+                            onAdd={addTodo}
+                            onToggle={toggleTodo}
+                            onDelete={deleteTodo}
                         />
                     )}
 
@@ -964,7 +1120,7 @@ export default function DuoFinancePage() {
                             <h2 className="font-bold text-xl mb-4">Settings</h2>
                             <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4 text-left">
                                 <p className="text-sm text-slate-500 mb-1">Database Status</p>
-                                <p className="font-bold text-green-600 flex items-center gap-2"><div className="w-2 h-2 bg-green-500 rounded-full"></div> Connected to MongoDB</p>
+                                <div className="font-bold text-green-600 flex items-center gap-2"><div className="w-2 h-2 bg-green-500 rounded-full"></div> Connected to MongoDB</div>
                             </div>
                             <button onClick={() => setView('dashboard')} className="block mx-auto mt-6 text-slate-400 font-medium">Back to Home</button>
                         </div>
@@ -988,6 +1144,13 @@ export default function DuoFinancePage() {
                     isDanger={confirmModal.isDanger}
                 />
 
+                <TransactionDetailsModal
+                    isOpen={isDetailsModalOpen}
+                    onClose={() => setIsDetailsModalOpen(false)}
+                    transaction={selectedTransaction}
+                    onDelete={deleteTx}
+                />
+
                 {/* Bottom Nav */}
                 <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-slate-200 px-4 py-2 flex justify-between items-center z-40 rounded-t-3xl shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
                     <button onClick={() => setView('dashboard')} className={`flex flex-col items-center p-2 rounded-xl w-16 transition-colors ${view === 'dashboard' ? 'text-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>
@@ -1006,14 +1169,14 @@ export default function DuoFinancePage() {
                         </button>
                     </div>
 
-                    <button onClick={() => setView('analytics')} className={`flex flex-col items-center p-2 rounded-xl w-16 transition-colors ${view === 'analytics' ? 'text-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>
-                        <PieChart size={22} strokeWidth={2.5} />
-                        <span className="text-[10px] font-bold mt-1">Stats</span>
+                    <button onClick={() => setView('todos')} className={`flex flex-col items-center p-2 rounded-xl w-16 transition-colors ${view === 'todos' ? 'text-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>
+                        <ListTodo size={22} strokeWidth={2.5} />
+                        <span className="text-[10px] font-bold mt-1">Todos</span>
                     </button>
 
-                    <button onClick={() => setView('settings')} className={`flex flex-col items-center p-2 rounded-xl w-16 transition-colors ${view === 'settings' ? 'text-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>
-                        <Menu size={22} strokeWidth={2.5} />
-                        <span className="text-[10px] font-bold mt-1">Menu</span>
+                    <button onClick={() => setView('analytics')} className={`flex flex-col items-center p-2 rounded-xl w-16 transition-colors ${view === 'analytics' ? 'text-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>
+                        <PieChartIcon size={22} strokeWidth={2.5} />
+                        <span className="text-[10px] font-bold mt-1">Stats</span>
                     </button>
                 </nav>
 
